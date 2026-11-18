@@ -11,14 +11,26 @@
 const params = new URLSearchParams(location.search);
 let fromSession = null;
 try {
-  if (params.get("api")) sessionStorage.setItem("tickmark.api", params.get("api"));
+  const apiParam = params.get("api");
+  if (apiParam === "local" || apiParam === "demo") {
+    sessionStorage.removeItem("tickmark.api");
+  } else if (apiParam) {
+    sessionStorage.setItem("tickmark.api", apiParam);
+  }
   fromSession = sessionStorage.getItem("tickmark.api");
 } catch { /* stockage indisponible */ }
+
+const isServedByBackend =
+  ((location.hostname === "localhost" || location.hostname === "127.0.0.1") && location.port === "8000") ||
+  location.hostname.endsWith(".run.app");
+
+const defaultApiBaseUrl =
+  params.get("api") === "demo" ? "" : (fromSession || (isServedByBackend ? location.origin : ""));
 
 export const CONFIG = {
   APP_NAME: "Tickmark",
   APP_TAGLINE: "Pointage IA",
-  API_BASE_URL: fromSession || "",
+  API_BASE_URL: defaultApiBaseUrl,
   USER: { firstName: "Lucas", lastName: "Giovinazzo", role: "Auditeur — Senior", initials: "LG" },
   // Bloque l'UI après X minutes d'inactivité (sécurité). 0 = désactivé.
   IDLE_LOCK_MINUTES: 15,
