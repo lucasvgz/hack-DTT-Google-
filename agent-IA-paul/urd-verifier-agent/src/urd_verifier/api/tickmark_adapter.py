@@ -80,12 +80,34 @@ def _looks_like_spelling(before: str, after: str) -> bool:
 
 def extract_tickmark_text(pdf_path: str | Path) -> tuple[str, int, list[tuple[int, int]]]:
     """Extract clean line/page-separated text (pages joined by '\\f') matching Tickmark's viewer."""
+    text, pages, offsets, _layout = extract_tickmark_document(pdf_path)
+    return text, pages, offsets
+
+
+def extract_tickmark_document(
+    pdf_path: str | Path,
+) -> tuple[str, int, list[tuple[int, int]], dict[str, Any]]:
+    """Same as extract_tickmark_text, plus the Tickmark position map (`layout`).
+
+    layout = {"pages": [{"w", "h", "f": [[start, end, x, y, width, size], ...]}]}
+    with start/end offsets in the full text and x/y the span baseline in PDF
+    points (origin bottom-left), as produced by the front's js/pdf-extract.js.
+    """
     doc = fitz.open(str(pdf_path))
     pages_text: list[str] = []
+    layout_pages: list[dict[str, Any]] = []
     try:
         for page in doc:
+            page_h = float(page.rect.height)
+            layout_page: dict[str, Any] = {
+                "w": round(float(page.rect.width), 1),
+                "h": round(page_h, 1),
+                "f": [],
+            }
+            layout_pages.append(layout_page)
+            local_frags: list[tuple[int, int, float, float, float, float]] = []
             d = page.get_text("dict")
-            frags: list[tuple[float, float, float, float, str]] = []
+            frags: list[tuple[float, float, float, float, str, float, float]] = []
             for blk in d.get("blocks", []):
                 if blk.get("type") != 0:
                     continue
@@ -95,7 +117,9 @@ def extract_tickmark_text(pdf_path: str | Path) -> tuple[str, int, list[tuple[in
                         if not txt:
                             continue
                         x0, y0, x1, y1 = sp["bbox"]
-                        frags.append((y0, x0, x1 - x0, max(y1 - y0, float(sp.get("size", 10.0))), txt))
+                        size = float(sp.get("size", 10.0))
+                        ox, oy = sp.get("origin", (x0, y1))
+                        frags.append((y0, x0, x1 - x0, max(y1 - y0, size), txt, page_h - float(oy), size))
 
             if not frags:
                 pages_text.append("")
@@ -104,35 +128,45 @@ def extract_tickmark_text(pdf_path: str | Path) -> tuple[str, int, list[tuple[in
             # Group spans into visual lines (y0 ascending = top-to-bottom)
             frags.sort(key=lambda f: (f[0], f[1]))
             lines: list[dict[str, Any]] = []
-            for y0, x0, w, h, txt in frags:
+            for y0, x0, w, h, txt, base_y, size in frags:
+                item = (x0, w, h, txt, base_y, size)
                 if lines and abs(lines[-1]["y"] - y0) <= h * 0.45:
-                    lines[-1]["items"].append((x0, w, h, txt))
+                    lines[-1]["items"].append(item)
                 else:
-                    lines.append({"y": y0, "h": h, "items": [(x0, w, h, txt)]})
+                    lines.append({"y": y0, "h": h, "items": [item]})
 
             gaps = [lines[i]["y"] - lines[i - 1]["y"] for i in range(1, len(lines))]
             pos_gaps = sorted(g for g in gaps if g > 0.5)
             median = pos_gaps[len(pos_gaps) // 2] if pos_gaps else 0.0
 
             out_parts: list[str] = []
+            page_len = 0
             for idx, ln in enumerate(lines):
                 ln["items"].sort(key=lambda it: it[0])
                 line_str = ""
-                for j, (x0, w, h, txt) in enumerate(ln["items"]):
+                line_frags: list[tuple[int, int, float, float, float, float]] = []
+                for j, (x0, w, h, txt, base_y, size) in enumerate(ln["items"]):
                     if j > 0:
-                        px0, pw, _, _ = ln["items"][j - 1]
+                        px0, pw = ln["items"][j - 1][:2]
                         gap_x = x0 - (px0 + pw)
                         if gap_x > h * 0.18 and not line_str.endswith((" ", "\t")) and not txt.startswith((" ", "\t")):
                             line_str += " "
+                    line_frags.append((len(line_str), len(line_str) + len(txt), x0, base_y, w, size))
                     line_str += txt
 
                 if idx > 0:
                     gap_y = ln["y"] - lines[idx - 1]["y"]
                     blank = max(0, round(gap_y / median) - 1) if median > 0 else 0
-                    out_parts.append("\n" + "\n" * min(blank, 3))
+                    sep = "\n" + "\n" * min(blank, 3)
+                    out_parts.append(sep)
+                    page_len += len(sep)
+                for fs, fe, x, y, w, size in line_frags:
+                    local_frags.append((page_len + fs, page_len + fe, x, y, w, size))
                 out_parts.append(line_str)
+                page_len += len(line_str)
 
             pages_text.append("".join(out_parts))
+            layout_page["_local"] = local_frags
     finally:
         doc.close()
 
@@ -143,8 +177,13 @@ def extract_tickmark_text(pdf_path: str | Path) -> tuple[str, int, list[tuple[in
         start = cursor
         end = start + len(pt)
         offsets.append((start, end))
+        lp = layout_pages[i]
+        lp["f"] = [
+            [start + fs, start + fe, round(x, 1), round(y, 1), round(w, 1), round(size, 1)]
+            for fs, fe, x, y, w, size in lp.pop("_local", [])
+        ]
         cursor = end + (1 if i < len(pages_text) - 1 else 0)
-    return full_text, len(pages_text), offsets
+    return full_text, len(pages_text), offsets, {"pages": layout_pages}
 
 
 def _split_lines_with_offsets(text: str) -> list[tuple[str, int]]:
@@ -407,8 +446,8 @@ def build_tickmark_response(
     llm_provider: str,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Build Tickmark API payload + diff_id->finding_id mapping from a VerificationSession."""
-    before_text, before_pages, before_offsets = extract_tickmark_text(before_pdf_path)
-    after_text, after_pages, after_offsets = extract_tickmark_text(after_pdf_path)
+    before_text, before_pages, before_offsets, before_layout = extract_tickmark_document(before_pdf_path)
+    after_text, after_pages, after_offsets, after_layout = extract_tickmark_document(after_pdf_path)
 
     hunks = _compute_text_hunks(before_text, after_text)
     used_findings: set[str] = set()
@@ -520,8 +559,8 @@ def build_tickmark_response(
         "id": session.session_id,
         "engine": engine_name,
         "documents": {
-            "before": {"text": before_text, "pageCount": before_pages},
-            "after": {"text": after_text, "pageCount": after_pages},
+            "before": {"text": before_text, "pageCount": before_pages, "layout": before_layout},
+            "after": {"text": after_text, "pageCount": after_pages, "layout": after_layout},
         },
         "differences": hunks,
         "agentSummary": session.summary.model_dump(),
