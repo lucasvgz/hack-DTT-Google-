@@ -15,9 +15,24 @@ Aucune installation et aucun build : HTML, CSS et JS natifs (modules ES).
 
 ```bash
 git clone <repo> && cd tickmark
-python3 -m http.server 8000      # ou : npx serve .
+python3 -m http.server 8080      # ou : npx serve -l 8080 .
+# ouvrir http://localhost:8080
+```
+
+> Le port 8000 est réservé au mode « avec agent » ci-dessous : servi sur `localhost:8000`, le front appelle automatiquement l'API sur la même origine. Pour forcer le mode démo navigateur, ajouter `?api=demo` à l'URL.
+
+### Avec l'agent IA (back-end `agent-IA-paul/urd-verifier-agent`)
+
+Le back-end FastAPI sert à la fois l'API (`/api/v1`, voir `docs/API_CONTRACT.md`) et le front, sur le même port :
+
+```bash
+cd agent-IA-paul/urd-verifier-agent
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+cd ../.. && URD_LLM_PROVIDER=offline ./start_tickmark.sh
 # ouvrir http://localhost:8000
 ```
+
+`URD_LLM_PROVIDER=offline` lance les contrôles déterministes sans clé ; pour la couche IA, renseigner une clé ou Vertex AI (voir `agent-IA-paul/urd-verifier-agent/.env.example`). L'agent renvoie la carte de positions (`layout`), donc les écarts sont surlignés sur les vraies pages PDF comme en mode démo. Pour viser un back-end distant : `?api=https://<service>.run.app`.
 
 > ⚠️ Ne pas ouvrir `index.html` en double-cliquant (`file://`) : les modules ES et `crypto.subtle` exigent un serveur HTTP (ou HTTPS).
 

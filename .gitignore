@@ -2,3 +2,10 @@ node_modules/
 .DS_Store
 *.log
 .env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+agent-IA-paul/urd-verifier-agent/data/
+agent-IA-paul/urd-verifier-agent/sample_data/
+*.egg-info/
