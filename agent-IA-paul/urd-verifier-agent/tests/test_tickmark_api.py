@@ -50,8 +50,8 @@ def test_tickmark_comparisons_validation_errors(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("URD_DATA_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("URD_LLM_PROVIDER", "offline")
 
-    v1_bytes = (SAMPLES_DIR / "URD_2025_v1_precedente.pdf").read_bytes()
-    v2_bytes = (SAMPLES_DIR / "URD_2025_v2_nouvelle.pdf").read_bytes()
+    v1_bytes = (SAMPLES_DIR / "urd_v1.pdf").read_bytes()
+    v2_bytes = (SAMPLES_DIR / "urd_v2.pdf").read_bytes()
 
     app = create_app()
     client = TestClient(app)
@@ -77,8 +77,8 @@ def test_tickmark_comparisons_validation_errors(tmp_path: Path, monkeypatch):
             "afterSha256": _sha256_hex(v2_bytes),
         },
         files={
-            "before": ("URD_2025_v1_precedente.pdf", v1_bytes, "application/pdf"),
-            "after": ("URD_2025_v2_nouvelle.pdf", v2_bytes, "application/pdf"),
+            "before": ("urd_v1.pdf", v1_bytes, "application/pdf"),
+            "after": ("urd_v2.pdf", v2_bytes, "application/pdf"),
         },
     )
     assert r_bad_sha.status_code == 409
@@ -89,8 +89,8 @@ def test_tickmark_full_comparison_review_and_send(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("URD_DATA_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("URD_LLM_PROVIDER", "offline")
 
-    v1_path = SAMPLES_DIR / "URD_2025_v1_precedente.pdf"
-    v2_path = SAMPLES_DIR / "URD_2025_v2_nouvelle.pdf"
+    v1_path = SAMPLES_DIR / "urd_v1.pdf"
+    v2_path = SAMPLES_DIR / "urd_v2.pdf"
     v1_bytes = v1_path.read_bytes()
     v2_bytes = v2_path.read_bytes()
 
@@ -126,6 +126,16 @@ def test_tickmark_full_comparison_review_and_send(tmp_path: Path, monkeypatch):
     assert after_doc["pageCount"] >= 1
     assert "\f" in before_text
     assert "\f" in after_text
+
+    # Position map used by the front to highlight on the real PDF pages
+    for doc, text in ((before_doc, before_text), (after_doc, after_text)):
+        pages = doc["layout"]["pages"]
+        assert len(pages) == doc["pageCount"]
+        for pg in pages:
+            assert pg["w"] > 0 and pg["h"] > 0
+            for fs, fe, x, y, w, size in pg["f"]:
+                assert 0 <= fs <= fe <= len(text)
+                assert 0 <= y <= pg["h"] + 1 and size > 0
 
     diffs = data["differences"]
     assert len(diffs) >= 5

@@ -8,3 +8,4 @@ __pycache__/
 .pytest_cache/
 agent-IA-paul/urd-verifier-agent/data/
 agent-IA-paul/urd-verifier-agent/sample_data/
+*.egg-info/
