@@ -105,12 +105,15 @@ export function categorize(before, after) {
   // 1. Mise en forme : seuls les blancs diffèrent
   if (stripWs(before) === stripWs(after)) {
     const nl = (s) => (s.match(/\n/g) || []).length;
-    const lb = nl(before) !== nl(after);
+    const layout = (s) => s.replace(/[^\S\n]+/g, ""); // texte + retours à la ligne uniquement
+    const lb = nl(before) !== nl(after) || layout(before) !== layout(after);
     return {
       category: "mise_en_forme", severity: "info",
       subtype: lb ? "Saut de ligne" : "Espacement",
       rationale: lb
-        ? `Seuls les retours à la ligne diffèrent (${nl(before)} → ${nl(after)}). Aucun caractère imprimable modifié — souvent dû à une remise en page.`
+        ? (nl(before) === nl(after)
+          ? "Retour à la ligne déplacé : mêmes mots, coupure de ligne différente. Aucun caractère imprimable modifié — remise en page."
+          : `Seuls les retours à la ligne diffèrent (${nl(before)} → ${nl(after)}). Aucun caractère imprimable modifié — souvent dû à une remise en page.`)
         : `Seuls les espaces diffèrent (« ${visible(before)} » → « ${visible(after)} »). Aucun caractère imprimable modifié.`,
       confidence: 0.99,
     };
@@ -219,6 +222,17 @@ export function diffDocuments(beforeText, afterText) {
     merged.push({ ...h });
   }
 
+  // Retour à la ligne déplacé (« actifs↵et passifs » → « actifs et↵passifs ») : deux hunks voisins dont le
+  // contenu imprimable est identique une fois réunis => un seul écart de mise en forme.
+  for (let k = 0; k < merged.length - 1; k++) {
+    const h = merged[k], n = merged[k + 1];
+    const aS = Math.min(h.aStart, n.aStart), aE = Math.max(h.aEnd, n.aEnd);
+    const bS = Math.min(h.bStart, n.bStart), bE = Math.max(h.bEnd, n.bEnd);
+    if (aE - aS > 80 || bE - bS > 80) continue;
+    const b = beforeText.slice(aS, aE), a = afterText.slice(bS, bE);
+    if (stripWs(b) === stripWs(a) && b !== a) { Object.assign(h, { aStart: aS, aEnd: aE, bStart: bS, bEnd: bE }); merged.splice(k + 1, 1); }
+  }
+
   // Retire les blancs communs en bordure (« selon␣ » / « conformément à␣ » → « selon » / « conformément à »)
   for (const h of merged) {
     while (h.aEnd > h.aStart && h.bEnd > h.bStart && /\s/.test(beforeText[h.aEnd - 1]) && beforeText[h.aEnd - 1] === afterText[h.bEnd - 1]
@@ -251,11 +265,21 @@ export function pageAt(text, offset) {
 }
 
 export function sectionAt(text, offset) {
-  const head = text.slice(0, offset);
-  const lines = head.split(/[\n\f]/);
+  // Titres de type « 4.3 Bilan… », « 1.b.3 Règles… », « Note 2 … » ou « 2. Chiffres clés »
+  const RE = /^\s*((?:Note\s+)?\d+(?:\.[0-9a-z]+)*\.?)\s+(\p{Lu}[^\t\n]{2,})$/u;
+  const lines = text.slice(0, offset).split(/[\n\f]/);
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(/^\s*(\d+)\.\s+(.+)/);
-    if (m) { const t = m[2].replace(/\s*\(.*$/, "").trim(); return `§${m[1]} ${t.length > 38 ? t.slice(0, 37) + "…" : t}`; }
+    // Numéro seul sur sa ligne (titre composé en deux blocs) : le titre est la ligne suivante non vide
+    const lone = lines[i].match(/^\s*(\d+(?:\.[0-9a-z]+)+)\s*$/);
+    if (lone) {
+      const next = lines.slice(i + 1).find((l) => l.trim());
+      if (next && /^\p{Lu}/u.test(next.trim())) return `§${lone[1]} ${next.trim().slice(0, 38)}`;
+    }
+    const m = lines[i].match(RE);
+    if (m && !/\d+[ \u00a0]\d{3}|\t/.test(m[2])) {
+      const t = m[2].replace(/\s*\(.*$/, "").trim();
+      return `§${m[1].replace(/\.$/, "")} ${t.length > 38 ? t.slice(0, 37) + "…" : t}`;
+    }
   }
   return "En-tête";
 }

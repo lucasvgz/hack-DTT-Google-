@@ -8,6 +8,8 @@ import { CATEGORY_ORDER } from "./diff-engine.js";
 import * as store from "./store.js";
 import * as api from "./api.js";
 import { DEMO_BEFORE, DEMO_AFTER } from "./demo-docs.js";
+import * as pdfView from "./pdf-view.js";
+import { putPdf, clearPdfs } from "./blobstore.js";
 
 /* =============================================================================
    Utilitaires
@@ -55,6 +57,7 @@ const ui = {
   uploads: {},        // clientId -> { before, after } (avec buffer en mémoire)
   running: {},        // sessionId -> { steps: {key: status}, error }
   review: { filter: "all", activeId: null },
+  zoom: 1.6,          // zoom des pages PDF dans l'écran de pointage
   clientEntity: "bnp",
 };
 
@@ -192,7 +195,7 @@ function viewHome() {
     <h2>Réinitialiser la démo ?</h2>
     <p class="muted" style="margin:0">Tous les pointages, synthèses et envois stockés dans ce navigateur seront supprimés.</p>
     <div class="actions"><button class="btn" data-close>Annuler</button><button class="btn btn-primary" id="ok">Réinitialiser</button></div>`,
-    (o, close) => $("#ok", o).addEventListener("click", () => { store.resetAll(); close(); route(); toast("Démo réinitialisée"); })));
+    (o, close) => $("#ok", o).addEventListener("click", () => { store.resetAll(); clearPdfs(); close(); route(); toast("Démo réinitialisée"); })));
 }
 
 function statusPill(s) {
@@ -229,7 +232,7 @@ function viewFolder(clientId) {
             <div class="pdf-ico"></div>
             <div style="min-width:0">
               <div class="n">${esc(f.name)}</div>
-              <div class="muted" style="font-size:12.5px">${fmtSize(f.size)}${f.demo ? " · jeu de démonstration" : ""}</div>
+              <div class="muted" style="font-size:12.5px">${fmtSize(f.size)}${f.demo ? " · extrait URD 2025 BNP Paribas, chap. 4" : ""}</div>
               <div class="hash" title="Empreinte SHA-256 : ${esc(f.sha256)}">${I.shield} SHA-256 ${esc(shortHash(f.sha256))}</div>
             </div>
           </div>` : `
@@ -320,13 +323,13 @@ function viewFolder(clientId) {
         if (!res.ok) throw new Error("fetch");
         return api.inspectFile(new File([await res.blob()], name, { type: "application/pdf" }));
       };
-      up.before = { ...(await load("samples/URD_2025_v1_precedente.pdf", "URD_2025_v1_precedente.pdf")), demo: true };
-      up.after = { ...(await load("samples/URD_2025_v2_nouvelle.pdf", "URD_2025_v2_nouvelle.pdf")), demo: true };
+      up.before = { ...(await load("samples/urd_v1.pdf", "urd_v1.pdf")), demo: true };
+      up.after = { ...(await load("samples/urd_v2.pdf", "urd_v2.pdf")), demo: true };
     } catch {
       // Repli : textes embarqués (si les PDF d'exemple ne sont pas servis)
       const mk = async (txt, name) => { const t = txt.replace("{CLIENT}", c.name); const buf = new TextEncoder().encode(t); return { name, size: buf.length, sha256: await api.sha256(buf), text: t, demo: true }; };
-      up.before = await mk(DEMO_BEFORE, "URD_2025_v1_precedente.pdf");
-      up.after = await mk(DEMO_AFTER, "URD_2025_v2_nouvelle.pdf");
+      up.before = await mk(DEMO_BEFORE, "urd_v1.txt");
+      up.after = await mk(DEMO_AFTER, "urd_v2.txt");
     }
     viewFolder(clientId);
   });
@@ -357,6 +360,11 @@ async function startAnalysis(clientId) {
       onStep: (key, st) => { ui.running[s.id].steps[key] = st; paintSteps(s.id); },
     });
     s.documents = res.documents;
+    // Conserve les PDF pour afficher les vraies pages pendant le pointage (si une carte de positions existe)
+    if (up.before.buffer && up.after.buffer && res.documents.before.layout && res.documents.after.layout) {
+      await Promise.all([putPdf(`${s.id}:before`, up.before.buffer), putPdf(`${s.id}:after`, up.after.buffer)]);
+      s.pdf = true;
+    }
     s.engine = res.engine;
     s.remoteId = res.id || null;
     s.differences = res.differences.map((d) => ({ ...d, status: "pending", note: "" }));
@@ -525,11 +533,16 @@ function renderDoc(text, diffs, side, opts = {}) {
   return html;
 }
 
-function scrollPaneTo(pane, id) {
+function scrollPaneTo(pane, id, smooth = true) {
   const el = pane?.querySelector(`[data-id="${id}"]`);
   if (!el) return;
   const r = el.getBoundingClientRect(), pr = pane.getBoundingClientRect();
-  pane.scrollTo({ top: pane.scrollTop + (r.top - pr.top) - pane.clientHeight / 2 + r.height / 2, behavior: "smooth" });
+  pane.scrollTo({
+    top: pane.scrollTop + (r.top - pr.top) - pane.clientHeight / 2 + r.height / 2,
+    // Horizontalement : on ne bouge que si l'écart est hors champ, en le plaçant aux 2/3 (libellés de tableau visibles)
+    left: r.left >= pr.left + 8 && r.right <= pr.right - 8 ? pane.scrollLeft : pane.scrollLeft + (r.left - pr.left) - pane.clientWidth * 0.66,
+    behavior: smooth ? "smooth" : "auto",
+  });
 }
 
 /* =============================================================================
@@ -575,6 +588,12 @@ function viewReview(sid) {
           <button id="next" title="Écart suivant (↓ ou Entrée)">${I.down}</button>
         </div>
         <span id="filter-label"></span>
+        <div class="finder zoom" aria-label="Zoom" style="margin-left:8px">
+          <button id="zoom-out" title="Zoom arrière">−</button>
+          <span class="pos" id="zoom-val" style="min-width:58px;justify-content:center"></span>
+          <button id="zoom-in" title="Zoom avant">+</button>
+        </div>
+        <span class="kbd-hint" title="↑ ↓ ou Entrée : naviguer · X : pas une erreur · N : annoter · Ctrl+Entrée : valider">⌨ Raccourcis</span>
         <div class="shortcuts"><span><span class="kbd">↑↓</span> naviguer</span><span><span class="kbd">X</span> pas une erreur</span><span><span class="kbd">N</span> annoter</span><span><span class="kbd">Ctrl ↵</span> valider</span></div>
       </div>
       <div class="docs">
@@ -594,8 +613,11 @@ function viewReview(sid) {
 
   const paneB = $("#pane-before"), paneA = $("#pane-after");
   const paintDocs = () => {
-    paneB.innerHTML = renderDoc(s.documents.before.text, s.differences, "before", { activeId: R.activeId });
-    paneA.innerHTML = renderDoc(s.documents.after.text, s.differences, "after", { activeId: R.activeId });
+    for (const p of [paneB, paneA]) p.style.setProperty("--zoom", s.pdf ? ui.zoom : 1);
+    $("#zoom-val").textContent = s.pdf ? `${Math.round(ui.zoom * 100)} %` : "Texte";
+    paneB.innerHTML = docHtml(s.pdf, s.documents.before, s.differences, "before", { activeId: R.activeId });
+    paneA.innerHTML = docHtml(s.pdf, s.documents.after, s.differences, "after", { activeId: R.activeId });
+    if (s.pdf) { pdfView.attach(paneB, `${s.id}:before`); pdfView.attach(paneA, `${s.id}:after`); }
   };
 
   const paintProgress = () => {
@@ -760,6 +782,14 @@ function viewReview(sid) {
       }));
   }
 
+  const zoom = (f) => {
+    if (!s.pdf) return;
+    ui.zoom = Math.min(3, Math.max(0.8, Math.round(ui.zoom * f * 10) / 10));
+    paintDocs();
+    requestAnimationFrame(() => { scrollPaneTo(paneB, R.activeId, false); scrollPaneTo(paneA, R.activeId, false); });
+  };
+  $("#zoom-in").addEventListener("click", () => zoom(1.25));
+  $("#zoom-out").addEventListener("click", () => zoom(0.8));
   $("#prev").addEventListener("click", () => step(-1));
   $("#next").addEventListener("click", () => step(1));
   $("#finalize").addEventListener("click", () => finalize(s));
@@ -830,10 +860,24 @@ function errorsList(errs, numbered) {
     </div>`).join("")}</div>`;
 }
 
-function docsPair(files, documents, errs, numbered) {
+/** Document : vraies pages PDF + surlignage si disponibles, sinon rendu texte. */
+function docHtml(isPdf, doc, diffs, side, opts) {
+  return isPdf && doc.layout
+    ? pdfView.pagesHtml(doc.layout, diffs, side, { ...opts, color: catColor })
+    : renderDoc(doc.text, diffs, side, opts);
+}
+
+function attachPdfs(root, sid, isPdf) {
+  if (!isPdf) return;
+  const panes = $$(".doc-scroll", root);
+  if (panes[0]) pdfView.attach(panes[0], `${sid}:before`);
+  if (panes[1]) pdfView.attach(panes[1], `${sid}:after`);
+}
+
+function docsPair(files, documents, errs, numbered, isPdf) {
   return `<div class="docs">
-    <div class="doc-pane"><div class="doc-head"><span class="vtag"><b>N-1</b></span><span class="fname">${esc(files.before.name)}</span></div><div class="doc-scroll">${renderDoc(documents.before.text, errs, "before", { numbered })}</div></div>
-    <div class="doc-pane"><div class="doc-head"><span class="vtag new"><b>N</b></span><span class="fname">${esc(files.after.name)}</span></div><div class="doc-scroll">${renderDoc(documents.after.text, errs, "after", { numbered })}</div></div>
+    <div class="doc-pane"><div class="doc-head"><span class="vtag"><b>N-1</b></span><span class="fname">${esc(files.before.name)}</span></div><div class="doc-scroll">${docHtml(isPdf, documents.before, errs, "before", { numbered })}</div></div>
+    <div class="doc-pane"><div class="doc-head"><span class="vtag new"><b>N</b></span><span class="fname">${esc(files.after.name)}</span></div><div class="doc-scroll">${docHtml(isPdf, documents.after, errs, "after", { numbered })}</div></div>
   </div>`;
 }
 
@@ -903,10 +947,11 @@ function viewSynthesis(sid) {
 
     <div class="card box synth-docs">
       <h3>Documents annotés <span class="muted" style="font-weight:500;font-size:12.5px">Seules les erreurs confirmées sont surlignées · numéros = liste ci-dessus</span></h3>
-      ${docsPair(s.files, s.documents, errs, numbered)}
+      ${docsPair(s.files, s.documents, errs, numbered, s.pdf)}
     </div>
   </div>`, [{ label: "Mes dossiers", href: "#/" }, { label: c.name, href: `#/dossier/${c.id}` }, { label: "Synthèse" }]);
 
+  attachPdfs($(".synth-docs"), s.id, s.pdf);
   $("#print").addEventListener("click", () => window.print());
   $("#json").addEventListener("click", () => {
     const payload = buildReport(s);
@@ -929,6 +974,7 @@ function buildReport(s) {
     sentBy: store.userName(),
     files: s.files,
     documents: s.documents,
+    pdf: Boolean(s.pdf),
     stats: { detected: s.differences.length, errors: errs.length },
     errors: errs.map(({ id, category, severity, before, after, beforeRange, afterRange, page, section, note }) => ({ id, category, severity, before, after, beforeRange, afterRange, page, section, note, status: "confirmed" })),
   };
@@ -1027,8 +1073,9 @@ function viewClientReport(rid) {
         </div>
       </div>
     </div>
-    <div class="card box synth-docs"><h3>Documents annotés</h3>${docsPair(r.files, r.documents, r.errors, numbered)}</div>
+    <div class="card box synth-docs"><h3>Documents annotés</h3>${docsPair(r.files, r.documents, r.errors, numbered, r.pdf)}</div>
   </div>`, [{ label: "Espace client", href: "#/client" }, { label: "Synthèse" }]);
+  attachPdfs($(".synth-docs"), r.sessionId, r.pdf);
   $("#print").addEventListener("click", () => window.print());
   $("#ack")?.addEventListener("click", () => {
     r.ackAt = new Date().toISOString();
