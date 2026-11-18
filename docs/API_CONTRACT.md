@@ -49,6 +49,8 @@ Tous les appels utilisent `credentials: "include"` : la session est portée par 
 }
 ```
 
+**Optionnel : `documents.before.layout` / `documents.after.layout`.** Si cette carte de positions est fournie, l'UI affiche les vraies pages PDF avec les écarts surlignés par-dessus ; sinon, elle affiche le texte. Format : `{ "pages": [ { "w": 595.3, "h": 841.9, "f": [[début, fin, x, y, largeur, corps], …] } ] }`, avec `début`/`fin` = offsets dans `text`, `x`/`y` = position de la ligne de base en points PDF (origine en bas à gauche). C'est exactement ce que produit `js/pdf-extract.js`.
+
 **Règles importantes pour le surlignage**
 
 - `beforeRange` / `afterRange` sont des **offsets de caractères `[début, fin)`** dans `documents.before.text` / `documents.after.text`. Le front surligne `text.slice(début, fin)`.

@@ -21,7 +21,11 @@ python3 -m http.server 8000      # ou : npx serve .
 
 > ⚠️ Ne pas ouvrir `index.html` en double-cliquant (`file://`) : les modules ES et `crypto.subtle` exigent un serveur HTTP (ou HTTPS).
 
-Pour la démo : **BNP Paribas → « Utiliser les documents de démonstration » → Lancer l'analyse**. Les PDF de test (données **fictives**) sont dans `samples/`. Ils contiennent 20 écarts volontaires (chiffres, faute introduite, virgule supprimée, double espace, saut de ligne, phrase ajoutée, dividende incohérent…).
+Pour la démo : **BNP Paribas → « Utiliser les documents de démonstration » → Lancer l'analyse**.
+
+- `samples/urd_v1.pdf` : 10 pages réelles de l'URD 2025 de BNP Paribas (chapitre 4 « États financiers consolidés », pages 200 à 209 ; document public).
+- `samples/urd_v2.pdf` : le même extrait, modifié à la main directement dans le flux PDF (mêmes polices, même mise en page) avec 13 écarts : 6 chiffres, 2 fautes d'orthographe, 2 ponctuations, 1 reformulation, 1 suppression, 1 saut de ligne déplacé. Le corrigé est dans `tools/make_urd_v2.py`.
+- Pendant le pointage, les **vraies pages PDF** sont affichées (rendu pdf.js) et les écarts sont surlignés par-dessus. Le zoom se règle dans la barre d'outils.
 
 ## Déployer sur GitHub Pages
 
@@ -50,14 +54,16 @@ css/styles.css          Design system (ADN Deloitte : noir = cadre, vert #86BC25
 js/config.js            ← URL de l'API, utilisateur, délais
 js/api.js               ← Couche back-end (remote | local)
 js/diff-engine.js       Moteur local : diff Myers ligne puis mot, catégorisation par règles
-js/pdf-extract.js       Extraction du texte PDF dans le navigateur (pdf.js embarqué)
+js/pdf-extract.js       Extraction du texte PDF + carte de positions (pdf.js embarqué)
+js/pdf-view.js          Rendu des vraies pages PDF avec surlignage des écarts
+js/blobstore.js         Stockage local des PDF (IndexedDB, mode démo)
 js/data.js              Dossiers clients et catégories (couleurs, règles)
 js/store.js             État et persistance localStorage (mode démo)
 js/app.js               Routeur et vues
 js/demo-docs.js         Textes de démo (généré)
 vendor/                 pdf.js 4.10 et polices Inter / JetBrains Mono (hébergés localement)
-samples/                PDF de test N-1 / N (données fictives)
-tools/                  generate_samples.py (PDF de démo) · test-engine.mjs (test du moteur)
+samples/                urd_v1.pdf / urd_v2.pdf (extrait URD 2025 BNP Paribas, V2 modifiée)
+tools/                  make_urd_v2.py (génère la paire de démo) · test-engine.mjs · generate_samples.py (texte de repli)
 docs/API_CONTRACT.md    Contrat front ↔ back et exigences sécurité
 ```
 
@@ -81,7 +87,7 @@ docs/API_CONTRACT.md    Contrat front ↔ back et exigences sécurité
 
 ## Limites connues (mode démo)
 
-- L'extraction PDF côté navigateur lit la couche texte : un PDF scanné renverra un texte vide (OCR à prévoir côté back-end, Document AI). pdf.js normalise aussi certains espaces multiples, donc le double espace du jeu de test n'est détecté que sur le texte embarqué, pas sur le PDF.
+- L'extraction PDF côté navigateur lit la couche texte : un PDF scanné renverra un texte vide (OCR à prévoir côté back-end, Document AI). pdf.js fusionne les espaces multiples : un double espace dans un PDF n'est donc pas détectable côté navigateur (les sauts de ligne déplacés, eux, le sont).
 - Un écart de remise en page (retour à la ligne déplacé) est classé « Espaces & sauts de ligne » : c'est voulu, et ces écarts s'écartent en masse.
 - Le portail client est simulé dans le même navigateur (localStorage). En production, il s'appuie sur `POST /send` et un contrôle d'accès côté serveur.
 - Les dossiers clients sont des exemples (`js/data.js`) et les documents sont fictifs.
